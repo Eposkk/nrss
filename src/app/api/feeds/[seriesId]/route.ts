@@ -4,6 +4,7 @@ import { assembleFeed, assemblePendingFeed } from '@/lib/rss'
 import { inngest } from '@/inngest/client'
 import { CACHE_CONTROL, EVENTS } from '@/lib/constants'
 import {
+	acquireQueueKickLock,
 	enqueueSeries,
 	getQueuePosition,
 	readSeriesFetchProgress,
@@ -13,6 +14,50 @@ import {
 
 export const dynamic = 'force-dynamic'
 
+export async function handleQueueOnCacheMiss(
+	seriesId: string,
+	deps?: {
+		enqueue?: typeof enqueueSeries
+		readProgress?: typeof readSeriesFetchProgress
+		writeProgress?: typeof writeSeriesFetchProgress
+		acquireKickLock?: typeof acquireQueueKickLock
+		sendKick?: () => Promise<unknown>
+	}
+): Promise<void> {
+	const enqueueFn = deps?.enqueue ?? enqueueSeries
+	const readProgressFn = deps?.readProgress ?? readSeriesFetchProgress
+	const writeProgressFn = deps?.writeProgress ?? writeSeriesFetchProgress
+	const acquireKickLockFn = deps?.acquireKickLock ?? acquireQueueKickLock
+	const sendKickFn =
+		deps?.sendKick ?? (async () => inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} }))
+
+	const enqueue = await enqueueFn(seriesId)
+	const existingProgress = await readProgressFn(seriesId)
+	const shouldWriteQueued = existingProgress?.status !== 'running'
+	if (enqueue.position !== null && enqueue.position > 0 && shouldWriteQueued) {
+		await writeProgressFn(seriesId, {
+			status: 'queued',
+			queuePosition: enqueue.position,
+			totalBatches: 0,
+			completedBatches: 0,
+			totalEpisodes: 0,
+			completedEpisodes: 0,
+			message: 'I kø for henting av episoder...',
+			updatedAt: new Date().toISOString(),
+		})
+	}
+	if (enqueue.enqueued) {
+		try {
+			const shouldKick = await acquireKickLockFn()
+			if (shouldKick) {
+				await sendKickFn()
+			}
+		} catch (err) {
+			console.warn('[feed] Inngest send failed:', err)
+		}
+	}
+}
+
 export async function GET(
 	_request: NextRequest,
 	{ params }: { params: Promise<{ seriesId: string }> }
@@ -21,26 +66,7 @@ export async function GET(
 	const t0 = Date.now()
 	const series = await getSeries(seriesId, { onCacheMiss: 'trigger' })
 	if (!series) {
-		const enqueue = await enqueueSeries(seriesId)
-		if (enqueue.position !== null && enqueue.position > 0) {
-			await writeSeriesFetchProgress(seriesId, {
-				status: 'queued',
-				queuePosition: enqueue.position,
-				totalBatches: 0,
-				completedBatches: 0,
-				totalEpisodes: 0,
-				completedEpisodes: 0,
-				message: 'I kø for henting av episoder...',
-				updatedAt: new Date().toISOString(),
-			})
-		}
-		if (enqueue.enqueued) {
-			try {
-				await inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} })
-			} catch (err) {
-				console.warn('[feed] Inngest send failed:', err)
-			}
-		}
+		await handleQueueOnCacheMiss(seriesId)
 		const progress = await readSeriesFetchProgress(seriesId)
 		const queuePosition = await getQueuePosition(seriesId)
 		const feed = assemblePendingFeed(

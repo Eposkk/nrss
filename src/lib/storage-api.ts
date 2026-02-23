@@ -6,9 +6,9 @@ import { ENV, REDIS_KEYS } from './constants'
 const KEY_PREFIX = REDIS_KEYS.SERIES_PREFIX
 const LOCK_PREFIX = REDIS_KEYS.SERIES_LOCK_PREFIX
 const PROGRESS_PREFIX = REDIS_KEYS.SERIES_PROGRESS_PREFIX
-const QUEUE_LIST_KEY = REDIS_KEYS.SERIES_QUEUE_LIST
-const QUEUE_SET_KEY = REDIS_KEYS.SERIES_QUEUE_SET
+const QUEUE_ZSET_KEY = REDIS_KEYS.SERIES_QUEUE_ZSET
 const QUEUE_ACTIVE_KEY = REDIS_KEYS.SERIES_QUEUE_ACTIVE
+const QUEUE_KICK_LOCK_KEY = REDIS_KEYS.SERIES_QUEUE_KICK_LOCK
 
 export type SeriesFetchProgress = {
 	status: 'queued' | 'running' | 'failed'
@@ -21,17 +21,16 @@ export type SeriesFetchProgress = {
 	updatedAt: string
 }
 
-type KvClient = {
+export type KvClient = {
 	get: (key: string) => Promise<string | null>
 	set: (key: string, value: string) => Promise<unknown>
 	setEx: (key: string, value: string, ttlSeconds: number) => Promise<unknown>
 	del: (key: string) => Promise<number>
-	rpush: (key: string, value: string) => Promise<number>
-	lpop: (key: string) => Promise<string | null>
-	lrange: (key: string, start: number, stop: number) => Promise<string[]>
-	sadd: (key: string, value: string) => Promise<number>
-	srem: (key: string, value: string) => Promise<number>
-	sismember: (key: string, value: string) => Promise<boolean>
+	zaddNx: (key: string, score: number, member: string) => Promise<boolean>
+	zrangeFirst: (key: string) => Promise<string | null>
+	zrank: (key: string, member: string) => Promise<number | null>
+	zrem: (key: string, member: string) => Promise<number>
+	zcard: (key: string) => Promise<number>
 	setNxEx: (key: string, value: string, ttlSeconds: number) => Promise<boolean>
 }
 
@@ -46,16 +45,17 @@ function getUpstash(): KvClient | null {
 		set: (k, v) => redis.set(k, v),
 		setEx: (k, v, ttlSeconds) => redis.set(k, v, { ex: ttlSeconds }),
 		del: (k) => redis.del(k),
-		rpush: (k, v) => redis.rpush(k, v),
-		lpop: async (k) => (await redis.lpop(k)) as string | null,
-		lrange: async (k, start, stop) =>
-			((await redis.lrange(k, start, stop)) as string[]) ?? [],
-		sadd: async (k, v) => (await redis.sadd(k, v)) as number,
-		srem: async (k, v) => (await redis.srem(k, v)) as number,
-		sismember: async (k, v) => {
-			const res = await redis.sismember(k, v)
+		zaddNx: async (k, score, member) => {
+			const res = await redis.zadd(k, { nx: true }, { score, member })
 			return Number(res) === 1
 		},
+		zrangeFirst: async (k) => {
+			const first = await redis.zrange<string[]>(k, 0, 0)
+			return first.at(0) ?? null
+		},
+		zrank: (k, member) => redis.zrank(k, member),
+		zrem: async (k, member) => (await redis.zrem(k, member)) as number,
+		zcard: (k) => redis.zcard(k),
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await redis.set(k, v, { nx: true, ex: ttlSeconds })
 			return res === 'OK'
@@ -77,19 +77,39 @@ async function getLocalRedis(): Promise<KvClient | null> {
 		set: (k, v) => localClient!.set(k, v),
 		setEx: (k, v, ttlSeconds) => localClient!.set(k, v, { EX: ttlSeconds }),
 		del: (k) => localClient!.del(k),
-		rpush: (k, v) => localClient!.rPush(k, v),
-		lpop: async (k) => await localClient!.lPop(k),
-		lrange: (k, start, stop) => localClient!.lRange(k, start, stop),
-		sadd: (k, v) => localClient!.sAdd(k, v),
-		srem: (k, v) => localClient!.sRem(k, v),
-		sismember: async (k, v) => {
-			const res = await localClient!.sIsMember(k, v)
-			return Number(res) === 1
+		zaddNx: async (k, score, member) => {
+			const added = await localClient!.zAdd(
+				k,
+				[{ score, value: member }],
+				{ NX: true }
+			)
+			return Number(added) === 1
 		},
+		zrangeFirst: async (k) => (await localClient!.zRange(k, 0, 0)).at(0) ?? null,
+		zrank: (k, member) => localClient!.zRank(k, member),
+		zrem: (k, member) => localClient!.zRem(k, member),
+		zcard: (k) => localClient!.zCard(k),
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await localClient!.set(k, v, { NX: true, EX: ttlSeconds })
 			return res === 'OK'
 		},
+	}
+}
+
+type QueueActiveClaim = {
+	seriesId: string
+	token: string
+	claimedAt: string
+}
+
+function parseActiveClaim(raw: string | null): QueueActiveClaim | null {
+	if (!raw) return null
+	try {
+		const parsed = JSON.parse(raw) as QueueActiveClaim
+		if (!parsed?.seriesId || !parsed?.token) return null
+		return parsed
+	} catch {
+		return null
 	}
 }
 
@@ -102,6 +122,10 @@ export async function disconnect(): Promise<void> {
 }
 
 let kv: KvClient | null = null
+
+export function __setKvForTests(client: KvClient | null): void {
+	kv = client
+}
 
 async function getKv(): Promise<KvClient | null> {
 	if (kv) return kv
@@ -209,11 +233,10 @@ export async function getQueuePosition(
 ): Promise<number | null> {
 	const client = await getKv()
 	if (!client) return null
-	const active = await client.get(QUEUE_ACTIVE_KEY)
-	if (active === seriesId) return 0
-	const items = await client.lrange(QUEUE_LIST_KEY, 0, -1)
-	const idx = items.findIndex((item) => item === seriesId)
-	return idx === -1 ? null : idx + 1
+	const active = parseActiveClaim(await client.get(QUEUE_ACTIVE_KEY))
+	if (active?.seriesId === seriesId) return 0
+	const rank = await client.zrank(QUEUE_ZSET_KEY, seriesId)
+	return rank == null ? null : rank + 1
 }
 
 export async function isSeriesQueuedOrActive(
@@ -221,9 +244,9 @@ export async function isSeriesQueuedOrActive(
 ): Promise<boolean> {
 	const client = await getKv()
 	if (!client) return false
-	const active = await client.get(QUEUE_ACTIVE_KEY)
-	if (active === seriesId) return true
-	return await client.sismember(QUEUE_SET_KEY, seriesId)
+	const active = parseActiveClaim(await client.get(QUEUE_ACTIVE_KEY))
+	if (active?.seriesId === seriesId) return true
+	return (await client.zrank(QUEUE_ZSET_KEY, seriesId)) !== null
 }
 
 export async function enqueueSeries(
@@ -231,39 +254,74 @@ export async function enqueueSeries(
 ): Promise<{ enqueued: boolean; position: number | null }> {
 	const client = await getKv()
 	if (!client) return { enqueued: false, position: null }
-	const active = await client.get(QUEUE_ACTIVE_KEY)
-	if (active === seriesId) return { enqueued: false, position: 0 }
-
-	const exists = await client.sismember(QUEUE_SET_KEY, seriesId)
-	if (!exists) {
-		await client.rpush(QUEUE_LIST_KEY, seriesId)
-		await client.sadd(QUEUE_SET_KEY, seriesId)
-	}
+	const active = parseActiveClaim(await client.get(QUEUE_ACTIVE_KEY))
+	if (active?.seriesId === seriesId) return { enqueued: false, position: 0 }
+	const enqueued = await client.zaddNx(QUEUE_ZSET_KEY, Date.now(), seriesId)
 	return {
-		enqueued: !exists,
+		enqueued,
 		position: await getQueuePosition(seriesId),
 	}
 }
 
-export async function dequeueNextSeries(): Promise<string | null> {
+export async function claimNextSeries(): Promise<{
+	seriesId: string
+	token: string
+} | null> {
 	const client = await getKv()
 	if (!client) return null
-	const next = await client.lpop(QUEUE_LIST_KEY)
-	if (!next) return null
-	await client.srem(QUEUE_SET_KEY, next)
-	return next
+	const active = parseActiveClaim(await client.get(QUEUE_ACTIVE_KEY))
+	if (active) return null
+
+	const seriesId = await client.zrangeFirst(QUEUE_ZSET_KEY)
+	if (!seriesId) return null
+
+	const token = createLockToken()
+	const claim: QueueActiveClaim = {
+		seriesId,
+		token,
+		claimedAt: new Date().toISOString(),
+	}
+	const claimed = await client.setNxEx(
+		QUEUE_ACTIVE_KEY,
+		JSON.stringify(claim),
+		ENV.SERIES_QUEUE_ACTIVE_TTL_SEC
+	)
+	if (!claimed) return null
+	const removed = await client.zrem(QUEUE_ZSET_KEY, seriesId)
+	if (removed === 0) {
+		await finalizeSeriesClaim(seriesId, token, { requeue: false })
+		return null
+	}
+	return { seriesId, token }
 }
 
-export async function setActiveSeries(seriesId: string): Promise<void> {
+export async function finalizeSeriesClaim(
+	seriesId: string,
+	token: string,
+	options?: { requeue?: boolean }
+): Promise<void> {
 	const client = await getKv()
 	if (!client) return
-	await client.set(QUEUE_ACTIVE_KEY, seriesId)
-}
-
-export async function clearActiveSeries(seriesId: string): Promise<void> {
-	const client = await getKv()
-	if (!client) return
-	const active = await client.get(QUEUE_ACTIVE_KEY)
-	if (active !== seriesId) return
+	const active = parseActiveClaim(await client.get(QUEUE_ACTIVE_KEY))
+	if (!active || active.seriesId !== seriesId || active.token !== token) return
 	await client.del(QUEUE_ACTIVE_KEY)
+	if (options?.requeue) {
+		await client.zaddNx(QUEUE_ZSET_KEY, Date.now(), seriesId)
+	}
+}
+
+export async function queueHasItems(): Promise<boolean> {
+	const client = await getKv()
+	if (!client) return false
+	return (await client.zcard(QUEUE_ZSET_KEY)) > 0
+}
+
+export async function acquireQueueKickLock(): Promise<boolean> {
+	const client = await getKv()
+	if (!client) return false
+	return await client.setNxEx(
+		QUEUE_KICK_LOCK_KEY,
+		createLockToken(),
+		ENV.SERIES_QUEUE_KICK_LOCK_TTL_SEC
+	)
 }

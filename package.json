@@ -10,7 +10,8 @@
 		"start": "next start",
 		"lint": "eslint",
 		"format": "prettier --write .",
-		"backfill": "tsx scripts/backfill.ts"
+		"backfill": "tsx scripts/backfill.ts",
+		"test": "tsx --test \"src/**/*.test.ts\""
 	},
 	"dependencies": {
 		"@tanstack/react-query": "^5.90.21",
