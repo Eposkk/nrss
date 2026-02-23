@@ -11,6 +11,7 @@ import { ENV, EVENTS } from '@/lib/constants'
 const BATCH_SIZE = Math.max(1, ENV.NRK_FETCH_BATCH_SIZE)
 const STEP_SLEEP_DURATION =
 	ENV.NRK_FETCH_BATCH_DELAY_MS > 0 ? `${ENV.NRK_FETCH_BATCH_DELAY_MS}ms` : null
+const PROGRESS_EVERY_N_BATCHES = 3
 
 async function runSeriesFetch(
 	step: { run: Function; sleep: Function },
@@ -77,21 +78,27 @@ async function runSeriesFetch(
 			`[inngest] ${seriesId}: batch ${i + 1}/${batchCount} done (${playbackBatch.length}/${batchItems.length} playable, total=${playableTotal})`
 		)
 		const completedBatches = i + 1
-		await step.run(`${prefix}-progress-batch-${i}`, async () => {
-			await storage.writeSeriesFetchProgress(seriesId, {
-				status: 'running',
-				queuePosition: 0,
-				totalBatches: batchCount,
-				completedBatches,
-				totalEpisodes: catalog.episodeResources.length,
-				completedEpisodes: Math.min(
-					completedBatches * BATCH_SIZE,
-					catalog.episodeResources.length
-				),
-				message: 'Henter episoder...',
-				updatedAt: new Date().toISOString(),
+		const shouldWriteProgress =
+			completedBatches === 1 ||
+			completedBatches === batchCount ||
+			completedBatches % PROGRESS_EVERY_N_BATCHES === 0
+		if (shouldWriteProgress) {
+			await step.run(`${prefix}-progress-batch-${i}`, async () => {
+				await storage.writeSeriesFetchProgress(seriesId, {
+					status: 'running',
+					queuePosition: 0,
+					totalBatches: batchCount,
+					completedBatches,
+					totalEpisodes: catalog.episodeResources.length,
+					completedEpisodes: Math.min(
+						completedBatches * BATCH_SIZE,
+						catalog.episodeResources.length
+					),
+					message: 'Henter episoder...',
+					updatedAt: new Date().toISOString(),
+				})
 			})
-		})
+		}
 		if (STEP_SLEEP_DURATION && i < batchCount - 1) {
 			await step.sleep(`${prefix}-rate-limit-${i}`, STEP_SLEEP_DURATION)
 		}
@@ -141,7 +148,6 @@ type QueueWorkerStorageDeps = {
 	queueHasItems: typeof storage.queueHasItems
 	acquireQueueKickLock: typeof storage.acquireQueueKickLock
 	writeSeriesFetchProgress: typeof storage.writeSeriesFetchProgress
-	clearQueueAndLocks: typeof storage.clearQueueAndLocks
 }
 
 export async function processQueueKick(
@@ -171,6 +177,7 @@ export async function processQueueKick(
 	if (!claim) return { processed: 0 }
 
 	let result: RunSeriesFetchResult
+	let shouldRequeue = false
 	try {
 		result = await runSeriesFetchFn(step, claim.seriesId, 0)
 	} catch (err) {
@@ -186,21 +193,14 @@ export async function processQueueKick(
 				updatedAt: new Date().toISOString(),
 			})
 		})
-		await step.run('queue-clear-on-failure', async () => {
-			await storageApi.clearQueueAndLocks()
-		})
 		console.error('[inngest] Unexpected series fetch error:', claim.seriesId, err)
+		shouldRequeue = true
 		result = { stored: false, reason: 'no_data' }
 	} finally {
 		await step.run('queue-finalize-claim', async () => {
 			await storageApi.finalizeSeriesClaim(claim.seriesId, claim.token, {
-				requeue: false,
+				requeue: shouldRequeue,
 			})
-		})
-	}
-	if (!result.stored) {
-		await step.run('queue-clear-on-unsuccessful-result', async () => {
-			await storageApi.clearQueueAndLocks()
 		})
 	}
 
@@ -221,7 +221,7 @@ export const fetchSeriesQueueWorker = inngest.createFunction(
 	{
 		id: 'fetch-series-queue-worker',
 		concurrency: { limit: 1 },
-		retries: 0,
+		retries: 2,
 	},
 	{ event: EVENTS.SERIES_QUEUE_KICK },
 	async ({ step }) => {

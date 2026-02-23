@@ -17,7 +17,6 @@ test('processQueueKick no-ops when queue empty', async () => {
 			queueHasItems: async () => false,
 			acquireQueueKickLock: async () => false,
 			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
-			clearQueueAndLocks: async () => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -35,15 +34,19 @@ test('processQueueKick finalizes and chains when queue has more items', async ()
 	const result = await processQueueKick(step, {
 		storageApi: {
 			claimNextSeries: async () => ({ seriesId: 'series-a', token: 'tok-1' }),
-			finalizeSeriesClaim: async (seriesId: string, token: string) => {
+			finalizeSeriesClaim: async (
+				seriesId: string,
+				token: string,
+				options?: { requeue?: boolean }
+			) => {
 				assert.equal(seriesId, 'series-a')
 				assert.equal(token, 'tok-1')
+				assert.equal(options?.requeue, false)
 				finalized += 1
 			},
 			queueHasItems: async () => true,
 			acquireQueueKickLock: async () => true,
 			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
-			clearQueueAndLocks: async () => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -56,23 +59,28 @@ test('processQueueKick finalizes and chains when queue has more items', async ()
 	assert.equal(sent, 1)
 })
 
-test('processQueueKick clears queue/locks on unsuccessful result', async () => {
-	let cleared = 0
+test('processQueueKick requeues current series on unexpected failure', async () => {
+	let requeueFlag: boolean | undefined
 	const result = await processQueueKick(step, {
 		storageApi: {
 			claimNextSeries: async () => ({ seriesId: 'series-a', token: 'tok-1' }),
-			finalizeSeriesClaim: async () => {},
+			finalizeSeriesClaim: async (
+				_seriesId: string,
+				_token: string,
+				options?: { requeue?: boolean }
+			) => {
+				requeueFlag = options?.requeue
+			},
 			queueHasItems: async () => false,
 			acquireQueueKickLock: async () => false,
 			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
-			clearQueueAndLocks: async () => {
-				cleared += 1
-			},
 		},
 		sendEvent: async () => {},
-		runSeriesFetchFn: async () => ({ stored: false, reason: 'no_data' }),
+		runSeriesFetchFn: async () => {
+			throw new Error('boom')
+		},
 	})
 
 	assert.equal(result.processed, 1)
-	assert.equal(cleared, 1)
+	assert.equal(requeueFlag, true)
 })
