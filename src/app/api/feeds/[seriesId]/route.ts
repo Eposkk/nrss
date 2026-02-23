@@ -3,6 +3,10 @@ import { getSeries } from '@/lib/caching'
 import { assembleFeed, assemblePendingFeed } from '@/lib/rss'
 import { inngest } from '@/inngest/client'
 import { CACHE_CONTROL, EVENTS } from '@/lib/constants'
+import {
+	readSeriesFetchProgress,
+	type SeriesFetchProgress,
+} from '@/lib/storage-api'
 
 export const dynamic = 'force-dynamic'
 
@@ -14,10 +18,17 @@ export async function GET(
 	const t0 = Date.now()
 	const series = await getSeries(seriesId, { onCacheMiss: 'trigger' })
 	if (!series) {
-		inngest
-			.send({ name: EVENTS.SERIES_FETCH, data: { seriesId } })
-			.catch((err) => console.warn('[feed] Inngest send failed:', err))
-		const feed = assemblePendingFeed(seriesId)
+		try {
+			await inngest.send({ name: EVENTS.SERIES_FETCH, data: { seriesId } })
+		} catch (err) {
+			console.warn('[feed] Inngest send failed:', err)
+		}
+		const progress = await readSeriesFetchProgress(seriesId)
+		const feed = assemblePendingFeed(
+			seriesId,
+			undefined,
+			describeProgress(progress)
+		)
 		console.log('[feed] 202 (fetching):', seriesId, `${Date.now() - t0}ms`)
 		return new NextResponse(feed, {
 			status: 200,
@@ -41,4 +52,25 @@ export async function GET(
 			'Cache-Control': CACHE_CONTROL.FEED_READY,
 		},
 	})
+}
+
+function describeProgress(
+	progress: SeriesFetchProgress | null
+): string | undefined {
+	if (!progress) return undefined
+	if (progress.status === 'failed') {
+		return progress.message ?? 'Henting feilet. Prøv på nytt om litt.'
+	}
+	if (progress.status === 'queued') {
+		return (
+			progress.message ?? 'Klargjør henting av episoder. Prøv igjen straks.'
+		)
+	}
+	if (progress.totalBatches > 0 && progress.totalEpisodes > 0) {
+		return `Henter episoder fra NRK: batch ${progress.completedBatches}/${progress.totalBatches}, episoder ${progress.completedEpisodes}/${progress.totalEpisodes}.`
+	}
+	return (
+		progress.message ??
+		'Henter episoder fra NRK. Prøv å oppdatere på nytt om 30–60 sekunder.'
+	)
 }

@@ -10,8 +10,13 @@ function escapeXml(s: string): string {
 		.replace(/'/g, '&apos;')
 }
 
-export function assemblePendingFeed(seriesId: string, title?: string): string {
+export function assemblePendingFeed(
+	seriesId: string,
+	title?: string,
+	progressDescription?: string
+): string {
 	const desc =
+		progressDescription ??
 		'Henter episoder fra NRK. Prøv å oppdatere på nytt om 30–60 sekunder.'
 	const channelTitle = title ? `${escapeXml(title)} (lasting)` : 'NRSS'
 	return `<?xml version="1.0" encoding="UTF-8"?>

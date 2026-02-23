@@ -5,6 +5,17 @@ import { REDIS_KEYS } from './constants'
 
 const KEY_PREFIX = REDIS_KEYS.SERIES_PREFIX
 const LOCK_PREFIX = REDIS_KEYS.SERIES_LOCK_PREFIX
+const PROGRESS_PREFIX = REDIS_KEYS.SERIES_PROGRESS_PREFIX
+
+export type SeriesFetchProgress = {
+	status: 'queued' | 'running' | 'failed'
+	totalBatches: number
+	completedBatches: number
+	totalEpisodes: number
+	completedEpisodes: number
+	message?: string
+	updatedAt: string
+}
 
 type KvClient = {
 	get: (key: string) => Promise<string | null>
@@ -124,4 +135,35 @@ export async function releaseSeriesLock(
 	const currentToken = await client.get(key)
 	if (currentToken !== token) return
 	await client.del(key)
+}
+
+export async function readSeriesFetchProgress(
+	seriesId: string
+): Promise<SeriesFetchProgress | null> {
+	const client = await getKv()
+	if (!client) return null
+	const raw = await client.get(`${PROGRESS_PREFIX}${seriesId}`)
+	if (raw == null) return null
+	try {
+		return JSON.parse(raw) as SeriesFetchProgress
+	} catch {
+		return null
+	}
+}
+
+export async function writeSeriesFetchProgress(
+	seriesId: string,
+	progress: SeriesFetchProgress
+): Promise<void> {
+	const client = await getKv()
+	if (!client) return
+	await client.set(`${PROGRESS_PREFIX}${seriesId}`, JSON.stringify(progress))
+}
+
+export async function clearSeriesFetchProgress(
+	seriesId: string
+): Promise<void> {
+	const client = await getKv()
+	if (!client) return
+	await client.del(`${PROGRESS_PREFIX}${seriesId}`)
 }

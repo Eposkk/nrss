@@ -5,6 +5,7 @@ export const EVENTS = {
 export const REDIS_KEYS = {
 	SERIES_PREFIX: 'series:',
 	SERIES_LOCK_PREFIX: 'series-lock:',
+	SERIES_PROGRESS_PREFIX: 'series-progress:',
 } as const
 
 export const CACHE_CONTROL = {

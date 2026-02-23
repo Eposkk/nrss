@@ -41,15 +41,49 @@ export const fetchSeries = inngest.createFunction(
 		}
 
 		try {
+			await step.run('progress-queued', async () => {
+				await storage.writeSeriesFetchProgress(seriesId, {
+					status: 'queued',
+					totalBatches: 0,
+					completedBatches: 0,
+					totalEpisodes: 0,
+					completedEpisodes: 0,
+					message: 'Starter innlasting av episoder...',
+					updatedAt: new Date().toISOString(),
+				})
+			})
+
 			const catalog = await step.run('get-catalog', async () => {
 				return await getSeriesCatalog(seriesId)
 			})
 			if (!catalog) {
+				await step.run('progress-failed-no-data', async () => {
+					await storage.writeSeriesFetchProgress(seriesId, {
+						status: 'failed',
+						totalBatches: 0,
+						completedBatches: 0,
+						totalEpisodes: 0,
+						completedEpisodes: 0,
+						message: 'Fant ingen data for serien hos NRK.',
+						updatedAt: new Date().toISOString(),
+					})
+				})
 				console.warn('[inngest] No data from NRK for:', seriesId)
 				return { stored: false, reason: 'no_data' }
 			}
 
 			const batchCount = Math.ceil(catalog.episodeResources.length / BATCH_SIZE)
+			await step.run('progress-running', async () => {
+				await storage.writeSeriesFetchProgress(seriesId, {
+					status: 'running',
+					totalBatches: batchCount,
+					completedBatches: 0,
+					totalEpisodes: catalog.episodeResources.length,
+					completedEpisodes: 0,
+					message: 'Henter episoder...',
+					updatedAt: new Date().toISOString(),
+				})
+			})
 			const episodes: PlaybackResolvedEpisode[] = []
 			for (let i = 0; i < batchCount; i++) {
 				const start = i * BATCH_SIZE
@@ -69,12 +103,38 @@ export const fetchSeries = inngest.createFunction(
 					return result
 				})
 				episodes.push(...playbackBatch)
+				const completedBatches = i + 1
+				await step.run(`progress-batch-${i}`, async () => {
+					await storage.writeSeriesFetchProgress(seriesId, {
+						status: 'running',
+						totalBatches: batchCount,
+						completedBatches,
+						totalEpisodes: catalog.episodeResources.length,
+						completedEpisodes: Math.min(
+							completedBatches * BATCH_SIZE,
+							catalog.episodeResources.length
+						),
+						message: 'Henter episoder...',
+						updatedAt: new Date().toISOString(),
+					})
+				})
 				if (STEP_SLEEP_DURATION && i < batchCount - 1) {
 					await step.sleep(`rate-limit-${i}`, STEP_SLEEP_DURATION)
 				}
 			}
 
 			if (episodes.length === 0) {
+				await step.run('progress-failed-no-playable', async () => {
+					await storage.writeSeriesFetchProgress(seriesId, {
+						status: 'failed',
+						totalBatches: batchCount,
+						completedBatches: batchCount,
+						totalEpisodes: catalog.episodeResources.length,
+						completedEpisodes: catalog.episodeResources.length,
+						message: 'Fant ingen avspillbare episoder for serien.',
+						updatedAt: new Date().toISOString(),
+					})
+				})
 				console.warn('[inngest] No playable episodes for:', seriesId)
 				return { stored: false, reason: 'no_playable_episodes' }
 			}
@@ -90,6 +150,9 @@ export const fetchSeries = inngest.createFunction(
 				series.episodes.length,
 				'episodes'
 			)
+			await step.run('progress-clear-success', async () => {
+				await storage.clearSeriesFetchProgress(seriesId)
+			})
 			return { stored: true, episodes: series.episodes.length }
 		} finally {
 			await step.run('release-lock', async () => {
