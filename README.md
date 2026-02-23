@@ -1,24 +1,49 @@
-# NRSS - RSS feeds for NRK's podcasts
+# NRSS (Next.js)
 
-Live version: [nrss.deno.dev](https://nrss.deno.dev/)
+NRK podcast RSS feeds. Search for NRK podcasts and get RSS feeds for any podcast player.
 
-A webapp built with Deno's [Fresh](https://fresh.deno.dev/) that generates
-public accessible RSS-feeds for their produced podcasts via their
-[API](https://psapi.nrk.no/documentation/).
+## Setup
 
-## Local development
+**Local dev (Docker):**
+```bash
+docker compose up -d
+```
+Then set `REDIS_URL=redis://localhost:6380` (or use `.env` with REDIS_URL).
 
-1. [Install Deno](https://deno.land/manual/getting_started/installation)
-1. `cp .env.example .env`
-1. Run the app: `deno task start`
-1. Open [localhost:8000](http://localhost:8000) in your browser
+**Production (Vercel):**
+1. Create an [Upstash Redis](https://upstash.com) database (free tier works).
+2. In Vercel: Integrations → Storage → add Upstash Redis.
+3. Set `NEXT_PUBLIC_APP_URL` to your deployment URL.
 
-## What is this?
+Without Redis, the app still works; series are fetched from NRK API on each request (no caching).
 
-This is made as a reaction that the goverment funded NRK is closing their own
-content to their own app instead of building under open standards like RSS.
+## Run
 
-## Known Problems
+```bash
+pnpm dev
+```
 
-- Some clients may not accept a feed hosted over HTTPS only. See @steinarb's workaround [here](https://github.com/olaven/NRSS/issues/5#issuecomment-1488840679) for a possible solution.
-- The feeds only provide the latest episodes for a podcast, not the entire archive. I've not yet found any acceptable method of fetching all episodes without getting rate limited by NRK or introducing a storage layer. This is tracked in https://github.com/olaven/NRSS/issues/8.
+Deploy to Vercel: connect the repo and add the env vars above.
+
+## Backfill
+
+Pre-populate Redis with all NRK podcasts. Requires Redis (e.g. `docker compose up -d` and `REDIS_URL=redis://localhost:6380`):
+
+```bash
+# 2s delay between requests (default), skip already-stored
+pnpm backfill
+
+# Single podcast (by series ID)
+pnpm backfill <seriesId>
+
+# Verbose (log each catalog page and playback batch)
+BACKFILL_VERBOSE=1 pnpm backfill radioresepsjonen
+# or
+BACKFILL_SERIES_ID=radioresepsjonen pnpm backfill
+
+# Custom delay (ms)
+BACKFILL_DELAY_MS=3000 pnpm backfill
+
+# Re-fetch existing
+BACKFILL_SKIP_EXISTING=false pnpm backfill
+```
