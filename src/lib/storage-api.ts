@@ -325,3 +325,11 @@ export async function acquireQueueKickLock(): Promise<boolean> {
 		ENV.SERIES_QUEUE_KICK_LOCK_TTL_SEC
 	)
 }
+
+export async function clearQueueAndLocks(): Promise<void> {
+	const client = await getKv()
+	if (!client) return
+	await client.del(QUEUE_ZSET_KEY)
+	await client.del(QUEUE_ACTIVE_KEY)
+	await client.del(QUEUE_KICK_LOCK_KEY)
+}

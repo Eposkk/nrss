@@ -119,6 +119,7 @@ type QueueWorkerStorageDeps = {
 	queueHasItems: typeof storage.queueHasItems
 	acquireQueueKickLock: typeof storage.acquireQueueKickLock
 	writeSeriesFetchProgress: typeof storage.writeSeriesFetchProgress
+	clearQueueAndLocks: typeof storage.clearQueueAndLocks
 }
 
 export async function processQueueKick(
@@ -163,6 +164,9 @@ export async function processQueueKick(
 				updatedAt: new Date().toISOString(),
 			})
 		})
+		await step.run('queue-clear-on-failure', async () => {
+			await storageApi.clearQueueAndLocks()
+		})
 		console.error('[inngest] Unexpected series fetch error:', claim.seriesId, err)
 		result = { stored: false, reason: 'no_data' }
 	} finally {
@@ -170,6 +174,11 @@ export async function processQueueKick(
 			await storageApi.finalizeSeriesClaim(claim.seriesId, claim.token, {
 				requeue: false,
 			})
+		})
+	}
+	if (!result.stored) {
+		await step.run('queue-clear-on-unsuccessful-result', async () => {
+			await storageApi.clearQueueAndLocks()
 		})
 	}
 

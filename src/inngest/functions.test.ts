@@ -17,6 +17,7 @@ test('processQueueKick no-ops when queue empty', async () => {
 			queueHasItems: async () => false,
 			acquireQueueKickLock: async () => false,
 			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			clearQueueAndLocks: async () => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -42,6 +43,7 @@ test('processQueueKick finalizes and chains when queue has more items', async ()
 			queueHasItems: async () => true,
 			acquireQueueKickLock: async () => true,
 			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			clearQueueAndLocks: async () => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -52,4 +54,25 @@ test('processQueueKick finalizes and chains when queue has more items', async ()
 	assert.equal(result.processed, 1)
 	assert.equal(finalized, 1)
 	assert.equal(sent, 1)
+})
+
+test('processQueueKick clears queue/locks on unsuccessful result', async () => {
+	let cleared = 0
+	const result = await processQueueKick(step, {
+		storageApi: {
+			claimNextSeries: async () => ({ seriesId: 'series-a', token: 'tok-1' }),
+			finalizeSeriesClaim: async () => {},
+			queueHasItems: async () => false,
+			acquireQueueKickLock: async () => false,
+			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			clearQueueAndLocks: async () => {
+				cleared += 1
+			},
+		},
+		sendEvent: async () => {},
+		runSeriesFetchFn: async () => ({ stored: false, reason: 'no_data' }),
+	})
+
+	assert.equal(result.processed, 1)
+	assert.equal(cleared, 1)
 })
