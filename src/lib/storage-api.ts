@@ -1,7 +1,7 @@
 import { Redis } from '@upstash/redis'
 import { createClient } from 'redis'
 import type { Series } from './storage'
-import { REDIS_KEYS } from './constants'
+import { ENV, REDIS_KEYS } from './constants'
 
 const KEY_PREFIX = REDIS_KEYS.SERIES_PREFIX
 const LOCK_PREFIX = REDIS_KEYS.SERIES_LOCK_PREFIX
@@ -20,6 +20,7 @@ export type SeriesFetchProgress = {
 type KvClient = {
 	get: (key: string) => Promise<string | null>
 	set: (key: string, value: string) => Promise<unknown>
+	setEx: (key: string, value: string, ttlSeconds: number) => Promise<unknown>
 	del: (key: string) => Promise<number>
 	setNxEx: (key: string, value: string, ttlSeconds: number) => Promise<boolean>
 }
@@ -33,6 +34,7 @@ function getUpstash(): KvClient | null {
 	return {
 		get: async (k) => (await redis.get(k)) as string | null,
 		set: (k, v) => redis.set(k, v),
+		setEx: (k, v, ttlSeconds) => redis.set(k, v, { ex: ttlSeconds }),
 		del: (k) => redis.del(k),
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await redis.set(k, v, { nx: true, ex: ttlSeconds })
@@ -53,6 +55,7 @@ async function getLocalRedis(): Promise<KvClient | null> {
 	return {
 		get: (k) => localClient!.get(k),
 		set: (k, v) => localClient!.set(k, v),
+		setEx: (k, v, ttlSeconds) => localClient!.set(k, v, { EX: ttlSeconds }),
 		del: (k) => localClient!.del(k),
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await localClient!.set(k, v, { NX: true, EX: ttlSeconds })
@@ -157,7 +160,11 @@ export async function writeSeriesFetchProgress(
 ): Promise<void> {
 	const client = await getKv()
 	if (!client) return
-	await client.set(`${PROGRESS_PREFIX}${seriesId}`, JSON.stringify(progress))
+	await client.setEx(
+		`${PROGRESS_PREFIX}${seriesId}`,
+		JSON.stringify(progress),
+		ENV.SERIES_PROGRESS_TTL_SEC
+	)
 }
 
 export async function clearSeriesFetchProgress(
