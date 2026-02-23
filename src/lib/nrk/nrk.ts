@@ -20,10 +20,9 @@ function delayWithJitter(baseMs: number): number {
 
 type CatalogImage = { url: string; width?: number }[]
 type CatalogTitles = { title: string; subtitle?: string | null }
-type HalLink = { href: string }
 type HalLinkShare = { href: string; templated?: boolean }
 
-type EpisodeHalResource = {
+export type EpisodeHalResource = {
   id: string
   episodeId: string
   date: string
@@ -62,10 +61,42 @@ type PlaybackManifest = {
   playable?: { assets: { url: string }[] }
 }
 
-async function fetchJson<T>(url: string): Promise<{ status: number; body: T }> {
+export type PlaybackResolvedEpisode = {
+  url: string
+  id: string
+  titles: CatalogTitles
+  date: string
+  durationInSeconds: number
+  _links: { share?: HalLinkShare }
+}
+
+export type NrkSeriesCatalog = {
+  series: SeriesViewModel
+  type: "series" | "podcast"
+  episodeResources: EpisodeHalResource[]
+}
+
+type FetchOptions = {
+  skipDelay?: boolean
+}
+
+async function fetchJson<T>(
+  url: string,
+  options?: FetchOptions,
+): Promise<{ status: number; body: T }> {
   const res = await fetch(url)
+  if (res.status === 429) {
+    const retryAfter = res.headers.get("Retry-After")
+    console.warn(
+      "[NRK] Rate limited (429)",
+      retryAfter ? `Retry-After: ${retryAfter}s` : "",
+      url,
+    )
+  }
   const body = (await res.json().catch(() => null)) as T
-  await sleep(delayWithJitter(NRK_FETCH_DELAY_MS))
+  if (!options?.skipDelay) {
+    await sleep(delayWithJitter(NRK_FETCH_DELAY_MS))
+  }
   return { status: res.status, body }
 }
 
@@ -133,6 +164,7 @@ export async function search(
 async function getPlaybackUrl(
   episodeId: string,
   type: "series" | "podcast",
+  options?: FetchOptions,
 ): Promise<string | null> {
   const endpoints = [
     type === "podcast"
@@ -144,7 +176,7 @@ async function getPlaybackUrl(
     `${NRK_API}/playback/manifest/${episodeId}`,
   ]
   for (const endpoint of endpoints) {
-    const { status, body } = await fetchJson<PlaybackManifest>(endpoint)
+    const { status, body } = await fetchJson<PlaybackManifest>(endpoint, options)
     if (status === 200 && body?.playable?.assets?.[0]?.url) {
       return body.playable.assets[0].url
     }
@@ -152,40 +184,17 @@ async function getPlaybackUrl(
   return null
 }
 
-async function getEpisodesForUmbrella(
+async function getSeasonEpisodeResources(
   seasons: { href: string }[],
-  type: "series" | "podcast",
-): Promise<
-  {
-    url: string
-    episodeId: string
-    date: string
-    titles: CatalogTitles
-    durationInSeconds: number
-    _links: { share?: HalLinkShare }
-    id: string
-  }[]
-> {
-  const results: {
-    url: string
-    episodeId: string
-    date: string
-    titles: CatalogTitles
-    durationInSeconds: number
-    _links: { share?: HalLinkShare }
-    id: string
-  }[] = []
+): Promise<EpisodeHalResource[]> {
+  const results: EpisodeHalResource[] = []
   for (const season of seasons) {
     const { status, body } = await fetchJson<SeasonEpisodes>(
       `https://psapi.nrk.no${season.href}`,
     )
     if (status !== 200 || !body) continue
     const episodes = body._embedded?.episodes?._embedded?.episodes ?? []
-    for (const ep of episodes) {
-      const url = await getPlaybackUrl(ep.episodeId, type)
-      if (url) results.push({ ...ep, url })
-      else if (VERBOSE) console.warn(`  Skipped non-playable: ${ep.episodeId}`)
-    }
+    results.push(...episodes)
   }
   return results
 }
@@ -196,7 +205,6 @@ const VERBOSE = process.env.BACKFILL_VERBOSE === "1"
 async function fetchAllEpisodes(
   seriesId: string,
   isPodcast: boolean,
-  type: "series" | "podcast",
 ): Promise<EpisodeHalResource[]> {
   const base = isPodcast
     ? `${NRK_API}/radio/catalog/podcast/${seriesId}/episodes`
@@ -230,17 +238,57 @@ async function fetchAllEpisodes(
   return all
 }
 
-async function getSeriesData(seriesId: string): Promise<{
-  series: SeriesViewModel
-  episodes: {
-    url: string
-    id: string
-    titles: CatalogTitles
-    date: string
-    durationInSeconds: number
-    _links: { share?: HalLinkShare }
-  }[]
-} | null> {
+async function fetchEpisodesUntilKnown(
+  seriesId: string,
+  isPodcast: boolean,
+  knownEpisodeIds: Set<string>,
+): Promise<EpisodeHalResource[]> {
+  const base = isPodcast
+    ? `${NRK_API}/radio/catalog/podcast/${seriesId}/episodes`
+    : `${NRK_API}/radio/catalog/series/${seriesId}/episodes`
+  const collected: EpisodeHalResource[] = []
+  let url: string | null = `${base}?pageSize=${EPISODES_PAGE_SIZE}&page=1`
+  let reachedKnown = false
+
+  while (url && !reachedKnown) {
+    const res: { status: number; body: EpisodesResponse } =
+      await fetchJson<EpisodesResponse>(url)
+    if (res.status !== 200 || !res.body) break
+
+    const body = res.body
+    const episodes = body._embedded?.episodes ?? []
+    for (const ep of episodes) {
+      if (knownEpisodeIds.has(ep.episodeId)) {
+        reachedKnown = true
+        break
+      }
+      collected.push(ep)
+    }
+
+    if (VERBOSE) {
+      console.log(`  ${seriesId}: incremental catalog ${collected.length} episodes`)
+    }
+
+    if (reachedKnown) break
+    if (body._links?.next?.href) {
+      const nextHref = body._links.next.href
+      url = nextHref.startsWith("http")
+        ? nextHref
+        : `https://psapi.nrk.no${nextHref}`
+    } else if (episodes.length >= EPISODES_PAGE_SIZE) {
+      const nextPage = Math.floor(collected.length / EPISODES_PAGE_SIZE) + 2
+      url = `${base}?pageSize=${EPISODES_PAGE_SIZE}&page=${nextPage}`
+    } else {
+      url = null
+    }
+  }
+
+  return collected
+}
+
+async function resolveSeriesCatalog(
+  seriesId: string,
+): Promise<{ seriesBody: CatalogSeries; isPodcast: boolean } | null> {
   const [episodesRes, seriesRes] = await Promise.all([
     fetchJson<EpisodesResponse>(
       `${NRK_API}/radio/catalog/podcast/${seriesId}/episodes?pageSize=${EPISODES_PAGE_SIZE}`,
@@ -288,77 +336,111 @@ async function getSeriesData(seriesId: string): Promise<{
       `  ${seriesId}: type=${seriesBody.type} seriesType=${seriesBody.seriesType}`,
     )
 
-  let episodes: {
-    url: string
-    id: string
-    titles: CatalogTitles
-    date: string
-    durationInSeconds: number
-    _links: { share?: HalLinkShare }
-  }[]
+  return { seriesBody, isPodcast }
+}
 
-  if (
-    seriesBody.seriesType === "umbrella" &&
-    seriesBody._links?.seasons?.length
-  ) {
-    if (VERBOSE)
-      console.log(
-        `  ${seriesId}: umbrella with ${seriesBody._links.seasons.length} seasons`,
-      )
-    const umbrellaEps = await getEpisodesForUmbrella(
-      seriesBody._links.seasons,
-      seriesBody.type,
-    )
-    if (VERBOSE)
-      console.log(
-        `  ${seriesId}: umbrella got ${umbrellaEps.length} playable episodes`,
-      )
-    episodes = umbrellaEps.map((e) => ({
-      url: e.url,
-      id: e.episodeId,
-      titles: e.titles,
-      date: e.date,
-      durationInSeconds: e.durationInSeconds,
-      _links: e._links,
-    }))
-  } else {
-    const episodeResources = await fetchAllEpisodes(
-      seriesId,
-      isPodcast,
-      seriesBody.type,
-    )
-    episodes = []
-    const BATCH = NRK_FETCH_DELAY_MS > 0 ? 1 : 50
-    for (let i = 0; i < episodeResources.length; i += BATCH) {
-      const batch = episodeResources.slice(i, i + BATCH)
-      const resolved = await Promise.all(
-        batch.map(async (ep) => {
-          const url = await getPlaybackUrl(ep.episodeId, seriesBody!.type)
-          if (!url) return null
-          return {
-            url,
-            id: ep.episodeId,
-            titles: ep.titles,
-            date: ep.date,
-            durationInSeconds: ep.durationInSeconds,
-            _links: ep._links,
-          }
-        }),
-      )
-      const valid = resolved.filter(
-        (r): r is NonNullable<typeof r> => r !== null,
-      )
-      if (valid.length < resolved.length && VERBOSE) {
-        console.warn(
-          `  Skipped ${resolved.length - valid.length} non-playable in batch`,
+export async function getSeriesCatalog(
+  seriesId: string,
+): Promise<NrkSeriesCatalog | null> {
+  const resolved = await resolveSeriesCatalog(seriesId)
+  if (!resolved) return null
+  const { seriesBody, isPodcast } = resolved
+
+  const episodeResources =
+    seriesBody.seriesType === "umbrella" && seriesBody._links?.seasons?.length
+      ? await getSeasonEpisodeResources(seriesBody._links.seasons)
+      : await fetchAllEpisodes(seriesId, isPodcast)
+
+  return {
+    series: seriesBody.series,
+    type: seriesBody.type,
+    episodeResources,
+  }
+}
+
+export async function getSeriesCatalogUpdates(
+  seriesId: string,
+  knownEpisodeIds: Set<string>,
+): Promise<NrkSeriesCatalog | null> {
+  const resolved = await resolveSeriesCatalog(seriesId)
+  if (!resolved) return null
+  const { seriesBody, isPodcast } = resolved
+
+  const episodeResources =
+    seriesBody.seriesType === "umbrella" && seriesBody._links?.seasons?.length
+      ? (await getSeasonEpisodeResources(seriesBody._links.seasons)).filter(
+          (ep) => !knownEpisodeIds.has(ep.episodeId),
         )
-      }
-      episodes.push(...valid)
-      if (VERBOSE)
-        console.log(
-          `  ${seriesId}: playback ${episodes.length}/${episodeResources.length}`,
-        )
+      : await fetchEpisodesUntilKnown(seriesId, isPodcast, knownEpisodeIds)
+
+  return {
+    series: seriesBody.series,
+    type: seriesBody.type,
+    episodeResources,
+  }
+}
+
+function toPlaybackEpisode(
+  ep: EpisodeHalResource,
+  url: string,
+): PlaybackResolvedEpisode {
+  return {
+    url,
+    id: ep.episodeId,
+    titles: ep.titles,
+    date: ep.date,
+    durationInSeconds: ep.durationInSeconds,
+    _links: ep._links,
+  }
+}
+
+export async function fetchPlaybackUrlsBatch(
+  episodeResources: EpisodeHalResource[],
+  type: "series" | "podcast",
+  options?: { delayPerRequest?: boolean },
+): Promise<PlaybackResolvedEpisode[]> {
+  const skipDelay = options?.delayPerRequest === false
+  if (NRK_FETCH_DELAY_MS > 0 && !skipDelay) {
+    const resolved: PlaybackResolvedEpisode[] = []
+    for (const ep of episodeResources) {
+      const url = await getPlaybackUrl(ep.episodeId, type, { skipDelay })
+      if (url) resolved.push(toPlaybackEpisode(ep, url))
+      else if (VERBOSE) console.warn(`  Skipped non-playable: ${ep.episodeId}`)
     }
+    return resolved
+  }
+
+  const batch = await Promise.all(
+    episodeResources.map(async (ep) => {
+      const url = await getPlaybackUrl(ep.episodeId, type, { skipDelay })
+      if (!url) return null
+      return toPlaybackEpisode(ep, url)
+    }),
+  )
+  const valid = batch.filter((ep): ep is NonNullable<typeof ep> => ep !== null)
+  if (valid.length < batch.length && VERBOSE) {
+    console.warn(`  Skipped ${batch.length - valid.length} non-playable in batch`)
+  }
+  return valid
+}
+
+async function getSeriesData(seriesId: string): Promise<{
+  series: SeriesViewModel
+  episodes: PlaybackResolvedEpisode[]
+} | null> {
+  const catalog = await getSeriesCatalog(seriesId)
+  if (!catalog) return null
+
+  const episodes: PlaybackResolvedEpisode[] = []
+  const batchSize = NRK_FETCH_DELAY_MS > 0 ? 1 : 50
+  for (let i = 0; i < catalog.episodeResources.length; i += batchSize) {
+    const batch = catalog.episodeResources.slice(i, i + batchSize)
+    const resolved = await fetchPlaybackUrlsBatch(batch, catalog.type)
+    episodes.push(...resolved)
+    if (VERBOSE)
+      console.log(
+        `  ${seriesId}: playback ${episodes.length}/${catalog.episodeResources.length}`,
+      )
   }
 
   if (episodes.length === 0) {
@@ -370,21 +452,14 @@ async function getSeriesData(seriesId: string): Promise<{
   }
 
   return {
-    series: seriesBody.series,
+    series: catalog.series,
     episodes,
   }
 }
 
-function parseSeries(data: {
+export function parseSeries(data: {
   series: SeriesViewModel
-  episodes: {
-    url: string
-    id: string
-    titles: CatalogTitles
-    date: string
-    durationInSeconds: number
-    _links: { share?: HalLinkShare }
-  }[]
+  episodes: PlaybackResolvedEpisode[]
 }): Series {
   const imageUrl = data.series.squareImage?.at(-1)?.url ?? ""
   return {

@@ -66,7 +66,16 @@ export async function readSeries(id: string): Promise<Series | null> {
 
 export async function writeSeries(series: Series): Promise<boolean> {
   const client = await getKv();
-  if (!client) return false;
-  await client.set(`${KEY_PREFIX}${series.id}`, JSON.stringify(series));
-  return true;
+  if (!client) {
+    console.warn("[storage] No Redis client; series not persisted:", series.id);
+    return false;
+  }
+  try {
+    await client.set(`${KEY_PREFIX}${series.id}`, JSON.stringify(series));
+    console.log("[storage] Wrote series:", series.id, `(${series.episodes.length} episodes)`);
+    return true;
+  } catch (err) {
+    console.error("[storage] writeSeries failed:", series.id, err);
+    return false;
+  }
 }

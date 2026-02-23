@@ -10,6 +10,21 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
+export function assemblePendingFeed(seriesId: string, title?: string): string {
+  const desc =
+    "Henter episoder fra NRK. Prøv å oppdatere på nytt om 30–60 sekunder.";
+  const channelTitle = title ? `${escapeXml(title)} (lasting)` : "NRSS";
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<channel>
+<title>${channelTitle}</title>
+<link>https://radio.nrk.no/podkast/${escapeXml(seriesId)}</link>
+<description>${escapeXml(desc)}</description>
+<ttl>60</ttl>
+</channel>
+</rss>`;
+}
+
 export function assembleFeed(series: Series): string {
   const items = series.episodes
     .map((ep) => {

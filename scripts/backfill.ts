@@ -44,9 +44,15 @@ async function main() {
 
   const priorityIds = loadPrioritySeries();
   const singleId = process.env.BACKFILL_SERIES_ID ?? process.argv[2];
-  let podcasts = singleId
-    ? [{ seriesId: singleId, title: singleId }]
-    : await listAllPodcastIds();
+  let podcasts: { seriesId: string; title: string }[];
+  if (singleId) {
+    podcasts = [{ seriesId: singleId, title: singleId }];
+    console.log("Single-series mode:", singleId);
+  } else {
+    console.log("Fetching podcast catalog from NRK...");
+    podcasts = await listAllPodcastIds();
+    console.log("Catalog loaded:", podcasts.length, "podcasts");
+  }
 
   if (!singleId && priorityIds.length > 0) {
     const prioritySet = new Set(priorityIds);
@@ -58,9 +64,6 @@ async function main() {
       console.log(`Priority-only mode: ${podcasts.length} series`);
     }
   }
-  console.log(
-    singleId ? `Backfilling single podcast: ${singleId}` : `Found ${podcasts.length} podcasts`
-  );
   const nrkDelay = process.env.NRK_FETCH_DELAY_MS ?? "0";
   console.log(`Delay: ${DELAY_MS}ms between series, NRK_FETCH_DELAY_MS: ${nrkDelay}ms, skip existing: ${SKIP_EXISTING}`);
 
@@ -68,34 +71,48 @@ async function main() {
   let skipped = 0;
   let failed = 0;
 
-  for (const { seriesId, title } of podcasts) {
+  const total = podcasts.length;
+  const startAt = Date.now();
+  console.log(`\n--- Backfill ${total} series ---\n`);
+
+  for (let i = 0; i < total; i++) {
+    const { seriesId, title } = podcasts[i];
+    const progress = `[${i + 1}/${total}]`;
+
     try {
       if (SKIP_EXISTING) {
         const existing = await storage.readSeries(seriesId);
         if (existing) {
           skipped++;
+          console.log(`${progress} Skip (cached): ${title} (${existing.episodes.length} eps)`);
+          await sleep(delayWithJitter(DELAY_MS));
           continue;
         }
       }
 
+      console.log(`${progress} Fetching: ${title}...`);
       const series = await getSeries(seriesId);
       if (series) {
-        await storage.writeSeries(series);
+        const ok = await storage.writeSeries(series);
         done++;
-        console.log(`[${done}/${podcasts.length}] ${title} (${series.episodes.length} episodes)`);
+        const persist = ok ? "stored" : "NOT stored";
+        const elapsed = ((Date.now() - startAt) / 1000).toFixed(0);
+        const eta = total > 1 ? `eta ~${Math.round(((Date.now() - startAt) / (i + 1)) * (total - i - 1) / 1000)}s` : "";
+        console.log(`${progress} OK (${persist}): ${title} (${series.episodes.length} episodes) ${elapsed}s ${eta}`.trim());
       } else {
         failed++;
-        console.error(`No data for ${seriesId} (${title})`);
+        console.error(`${progress} No data: ${seriesId} (${title})`);
       }
     } catch (err) {
       failed++;
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Failed ${seriesId} (${title}): ${msg}`);
+      console.error(`${progress} Failed: ${seriesId} (${title}): ${msg}`);
     }
     await sleep(delayWithJitter(DELAY_MS));
   }
 
-  console.log(`Done. Fetched: ${done}, skipped: ${skipped}, failed: ${failed}`);
+  const totalSec = ((Date.now() - startAt) / 1000).toFixed(1);
+  console.log(`Done in ${totalSec}s. Fetched: ${done}, skipped: ${skipped}, failed: ${failed}`);
   await storage.disconnect();
   process.exit(0);
 }
