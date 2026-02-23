@@ -54,7 +54,7 @@ function getUpstash(): KvClient | null {
 		srem: async (k, v) => (await redis.srem(k, v)) as number,
 		sismember: async (k, v) => {
 			const res = await redis.sismember(k, v)
-			return res === 1 || res === true
+			return Number(res) === 1
 		},
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await redis.set(k, v, { nx: true, ex: ttlSeconds })
@@ -84,7 +84,7 @@ async function getLocalRedis(): Promise<KvClient | null> {
 		srem: (k, v) => localClient!.sRem(k, v),
 		sismember: async (k, v) => {
 			const res = await localClient!.sIsMember(k, v)
-			return res === 1 || res === true
+			return Number(res) === 1
 		},
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await localClient!.set(k, v, { NX: true, EX: ttlSeconds })
