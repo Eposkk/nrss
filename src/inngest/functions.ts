@@ -18,7 +18,9 @@ async function runSeriesFetch(
 	queueIndex: number
 ): Promise<RunSeriesFetchResult> {
 	const prefix = `series-${queueIndex}`
-	const catalog = await getSeriesCatalog(seriesId)
+	const catalog = await step.run(`${prefix}-get-catalog`, async () => {
+		return await getSeriesCatalog(seriesId)
+	})
 	if (!catalog) {
 		await step.run(`${prefix}-progress-failed-no-data`, async () => {
 			await storage.writeSeriesFetchProgress(seriesId, {
