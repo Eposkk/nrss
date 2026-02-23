@@ -51,16 +51,31 @@ async function runSeriesFetch(
 		})
 	})
 
-	const episodes: PlaybackResolvedEpisode[] = []
+	const getBatchPlayback = async (batchIndex: number) => {
+		const start = batchIndex * BATCH_SIZE
+		const end = start + BATCH_SIZE
+		return await step.run(`${prefix}-fetch-batch-${batchIndex}`, async () => {
+			return await fetchPlaybackUrlsBatch(
+				catalog.episodeResources.slice(start, end),
+				catalog.type,
+				{ delayPerRequest: false }
+			)
+		})
+	}
+
+	let playableTotal = 0
 	for (let i = 0; i < batchCount; i++) {
 		const start = i * BATCH_SIZE
 		const end = start + BATCH_SIZE
-		const playbackBatch = await fetchPlaybackUrlsBatch(
-			catalog.episodeResources.slice(start, end),
-			catalog.type,
-			{ delayPerRequest: false }
+		const batchItems = catalog.episodeResources.slice(start, end)
+		console.log(
+			`[inngest] ${seriesId}: batch ${i + 1}/${batchCount} start (${batchItems.length} episodes)`
 		)
-		episodes.push(...playbackBatch)
+		const playbackBatch = await getBatchPlayback(i)
+		playableTotal += playbackBatch.length
+		console.log(
+			`[inngest] ${seriesId}: batch ${i + 1}/${batchCount} done (${playbackBatch.length}/${batchItems.length} playable, total=${playableTotal})`
+		)
 		const completedBatches = i + 1
 		await step.run(`${prefix}-progress-batch-${i}`, async () => {
 			await storage.writeSeriesFetchProgress(seriesId, {
@@ -80,6 +95,13 @@ async function runSeriesFetch(
 		if (STEP_SLEEP_DURATION && i < batchCount - 1) {
 			await step.sleep(`${prefix}-rate-limit-${i}`, STEP_SLEEP_DURATION)
 		}
+	}
+
+	// Rebuild from durable step outputs so step.sleep resumptions never lose earlier batches.
+	const episodes: PlaybackResolvedEpisode[] = []
+	for (let i = 0; i < batchCount; i++) {
+		const playbackBatch = await getBatchPlayback(i)
+		episodes.push(...playbackBatch)
 	}
 
 	if (episodes.length === 0) {
