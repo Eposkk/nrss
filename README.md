@@ -5,12 +5,15 @@ NRK podcast RSS feeds. Search for NRK podcasts and get RSS feeds for any podcast
 ## Setup
 
 **Local dev (Docker):**
+
 ```bash
 docker compose up -d
 ```
+
 Then set `REDIS_URL=redis://localhost:6380` (or use `.env` with REDIS_URL).
 
 **Production (Vercel):**
+
 1. Create an [Upstash Redis](https://upstash.com) database (free tier works).
 2. In Vercel: Integrations → Storage → add Upstash Redis.
 3. Set `NEXT_PUBLIC_APP_URL` to your deployment URL.
