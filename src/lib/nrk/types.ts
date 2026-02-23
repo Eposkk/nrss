@@ -3,6 +3,10 @@ export type SearchSeriesResult = {
 	seriesId: string
 	type: 'series' | 'podcast' | 'customSeason'
 	title: string
+	subtitle?: string | null
+	description?: string | null
+	numberOfEpisodes?: number
+	episodeCount?: number
 	images: { uri?: string; width?: number }[]
 }
 

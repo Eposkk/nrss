@@ -12,7 +12,7 @@ export default async function Home({
 	return (
 		<div className='min-h-screen'>
 			<header className='border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-10'>
-				<div className='mx-auto max-w-2xl px-4 py-6'>
+				<div className='mx-auto max-w-3xl px-4 py-6'>
 					<Link href='/' className='inline-block'>
 						<h1 className='text-2xl font-bold tracking-tight hover:opacity-80 transition-opacity'>
 							NRSS
@@ -23,7 +23,7 @@ export default async function Home({
 					</Link>
 				</div>
 			</header>
-			<main className='mx-auto max-w-2xl px-4 py-8'>
+			<main className='mx-auto max-w-3xl px-4 py-8'>
 				<SearchWithResults initialQuery={query ?? null} origin={origin} />
 				<article className='mt-12 pt-8 border-t border-slate-200 dark:border-slate-700'>
 					<h2 className='text-lg font-semibold text-slate-800 dark:text-slate-200'>
