@@ -4,8 +4,11 @@ import { assembleFeed, assemblePendingFeed } from '@/lib/rss'
 import { inngest } from '@/inngest/client'
 import { CACHE_CONTROL, EVENTS } from '@/lib/constants'
 import {
+	enqueueSeries,
+	getQueuePosition,
 	readSeriesFetchProgress,
 	type SeriesFetchProgress,
+	writeSeriesFetchProgress,
 } from '@/lib/storage-api'
 
 export const dynamic = 'force-dynamic'
@@ -18,16 +21,32 @@ export async function GET(
 	const t0 = Date.now()
 	const series = await getSeries(seriesId, { onCacheMiss: 'trigger' })
 	if (!series) {
-		try {
-			await inngest.send({ name: EVENTS.SERIES_FETCH, data: { seriesId } })
-		} catch (err) {
-			console.warn('[feed] Inngest send failed:', err)
+		const enqueue = await enqueueSeries(seriesId)
+		if (enqueue.position !== null && enqueue.position > 0) {
+			await writeSeriesFetchProgress(seriesId, {
+				status: 'queued',
+				queuePosition: enqueue.position,
+				totalBatches: 0,
+				completedBatches: 0,
+				totalEpisodes: 0,
+				completedEpisodes: 0,
+				message: 'I kø for henting av episoder...',
+				updatedAt: new Date().toISOString(),
+			})
+		}
+		if (enqueue.enqueued) {
+			try {
+				await inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} })
+			} catch (err) {
+				console.warn('[feed] Inngest send failed:', err)
+			}
 		}
 		const progress = await readSeriesFetchProgress(seriesId)
+		const queuePosition = await getQueuePosition(seriesId)
 		const feed = assemblePendingFeed(
 			seriesId,
 			undefined,
-			describeProgress(progress)
+			describeProgress(progress, queuePosition)
 		)
 		console.log('[feed] 202 (fetching):', seriesId, `${Date.now() - t0}ms`)
 		return new NextResponse(feed, {
@@ -55,13 +74,18 @@ export async function GET(
 }
 
 function describeProgress(
-	progress: SeriesFetchProgress | null
+	progress: SeriesFetchProgress | null,
+	queuePosition: number | null
 ): string | undefined {
 	if (!progress) return undefined
 	if (progress.status === 'failed') {
 		return progress.message ?? 'Henting feilet. Prøv på nytt om litt.'
 	}
 	if (progress.status === 'queued') {
+		const position = queuePosition ?? progress.queuePosition ?? null
+		if (position !== null && position > 0) {
+			return `I kø for henting av episoder (plass ${position}). Tiden avhenger av hvor mange episoder serien har.`
+		}
 		return (
 			progress.message ?? 'Klargjør henting av episoder. Prøv igjen straks.'
 		)

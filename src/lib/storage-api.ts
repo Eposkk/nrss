@@ -6,9 +6,13 @@ import { ENV, REDIS_KEYS } from './constants'
 const KEY_PREFIX = REDIS_KEYS.SERIES_PREFIX
 const LOCK_PREFIX = REDIS_KEYS.SERIES_LOCK_PREFIX
 const PROGRESS_PREFIX = REDIS_KEYS.SERIES_PROGRESS_PREFIX
+const QUEUE_LIST_KEY = REDIS_KEYS.SERIES_QUEUE_LIST
+const QUEUE_SET_KEY = REDIS_KEYS.SERIES_QUEUE_SET
+const QUEUE_ACTIVE_KEY = REDIS_KEYS.SERIES_QUEUE_ACTIVE
 
 export type SeriesFetchProgress = {
 	status: 'queued' | 'running' | 'failed'
+	queuePosition?: number
 	totalBatches: number
 	completedBatches: number
 	totalEpisodes: number
@@ -22,6 +26,12 @@ type KvClient = {
 	set: (key: string, value: string) => Promise<unknown>
 	setEx: (key: string, value: string, ttlSeconds: number) => Promise<unknown>
 	del: (key: string) => Promise<number>
+	rpush: (key: string, value: string) => Promise<number>
+	lpop: (key: string) => Promise<string | null>
+	lrange: (key: string, start: number, stop: number) => Promise<string[]>
+	sadd: (key: string, value: string) => Promise<number>
+	srem: (key: string, value: string) => Promise<number>
+	sismember: (key: string, value: string) => Promise<boolean>
 	setNxEx: (key: string, value: string, ttlSeconds: number) => Promise<boolean>
 }
 
@@ -36,6 +46,16 @@ function getUpstash(): KvClient | null {
 		set: (k, v) => redis.set(k, v),
 		setEx: (k, v, ttlSeconds) => redis.set(k, v, { ex: ttlSeconds }),
 		del: (k) => redis.del(k),
+		rpush: (k, v) => redis.rpush(k, v),
+		lpop: async (k) => (await redis.lpop(k)) as string | null,
+		lrange: async (k, start, stop) =>
+			((await redis.lrange(k, start, stop)) as string[]) ?? [],
+		sadd: async (k, v) => (await redis.sadd(k, v)) as number,
+		srem: async (k, v) => (await redis.srem(k, v)) as number,
+		sismember: async (k, v) => {
+			const res = await redis.sismember(k, v)
+			return res === 1 || res === true
+		},
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await redis.set(k, v, { nx: true, ex: ttlSeconds })
 			return res === 'OK'
@@ -57,6 +77,15 @@ async function getLocalRedis(): Promise<KvClient | null> {
 		set: (k, v) => localClient!.set(k, v),
 		setEx: (k, v, ttlSeconds) => localClient!.set(k, v, { EX: ttlSeconds }),
 		del: (k) => localClient!.del(k),
+		rpush: (k, v) => localClient!.rPush(k, v),
+		lpop: async (k) => await localClient!.lPop(k),
+		lrange: (k, start, stop) => localClient!.lRange(k, start, stop),
+		sadd: (k, v) => localClient!.sAdd(k, v),
+		srem: (k, v) => localClient!.sRem(k, v),
+		sismember: async (k, v) => {
+			const res = await localClient!.sIsMember(k, v)
+			return res === 1 || res === true
+		},
 		setNxEx: async (k, v, ttlSeconds) => {
 			const res = await localClient!.set(k, v, { NX: true, EX: ttlSeconds })
 			return res === 'OK'
@@ -173,4 +202,68 @@ export async function clearSeriesFetchProgress(
 	const client = await getKv()
 	if (!client) return
 	await client.del(`${PROGRESS_PREFIX}${seriesId}`)
+}
+
+export async function getQueuePosition(
+	seriesId: string
+): Promise<number | null> {
+	const client = await getKv()
+	if (!client) return null
+	const active = await client.get(QUEUE_ACTIVE_KEY)
+	if (active === seriesId) return 0
+	const items = await client.lrange(QUEUE_LIST_KEY, 0, -1)
+	const idx = items.findIndex((item) => item === seriesId)
+	return idx === -1 ? null : idx + 1
+}
+
+export async function isSeriesQueuedOrActive(
+	seriesId: string
+): Promise<boolean> {
+	const client = await getKv()
+	if (!client) return false
+	const active = await client.get(QUEUE_ACTIVE_KEY)
+	if (active === seriesId) return true
+	return await client.sismember(QUEUE_SET_KEY, seriesId)
+}
+
+export async function enqueueSeries(
+	seriesId: string
+): Promise<{ enqueued: boolean; position: number | null }> {
+	const client = await getKv()
+	if (!client) return { enqueued: false, position: null }
+	const active = await client.get(QUEUE_ACTIVE_KEY)
+	if (active === seriesId) return { enqueued: false, position: 0 }
+
+	const exists = await client.sismember(QUEUE_SET_KEY, seriesId)
+	if (!exists) {
+		await client.rpush(QUEUE_LIST_KEY, seriesId)
+		await client.sadd(QUEUE_SET_KEY, seriesId)
+	}
+	return {
+		enqueued: !exists,
+		position: await getQueuePosition(seriesId),
+	}
+}
+
+export async function dequeueNextSeries(): Promise<string | null> {
+	const client = await getKv()
+	if (!client) return null
+	const next = await client.lpop(QUEUE_LIST_KEY)
+	if (!next) return null
+	await client.srem(QUEUE_SET_KEY, next)
+	return next
+}
+
+export async function setActiveSeries(seriesId: string): Promise<void> {
+	const client = await getKv()
+	if (!client) return
+	await client.set(QUEUE_ACTIVE_KEY, seriesId)
+}
+
+export async function clearActiveSeries(seriesId: string): Promise<void> {
+	const client = await getKv()
+	if (!client) return
+	const active = await client.get(QUEUE_ACTIVE_KEY)
+	if (active !== seriesId) return
+	await client.del(QUEUE_ACTIVE_KEY)
 }

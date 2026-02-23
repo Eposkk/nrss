@@ -1,11 +1,15 @@
 export const EVENTS = {
 	SERIES_FETCH: 'nrss/series.fetch',
+	SERIES_QUEUE_KICK: 'nrss/series.queue.kick',
 } as const
 
 export const REDIS_KEYS = {
 	SERIES_PREFIX: 'series:',
 	SERIES_LOCK_PREFIX: 'series-lock:',
 	SERIES_PROGRESS_PREFIX: 'series-progress:',
+	SERIES_QUEUE_LIST: 'series-queue',
+	SERIES_QUEUE_SET: 'series-queue-set',
+	SERIES_QUEUE_ACTIVE: 'series-queue-active',
 } as const
 
 export const CACHE_CONTROL = {
