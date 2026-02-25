@@ -93,20 +93,21 @@ test('parallel uncached requests for different series enqueue each series once',
 	}
 
 	await Promise.all(
-		['series-a', 'series-b', 'series-c', 'series-d', 'series-e'].map((seriesId) =>
-			handleQueueOnCacheMiss(seriesId, {
-				enqueue,
-				readProgress: async () => null,
-				writeProgress: async () => {},
-				acquireKickLock: async () => {
-					if (kickLocked) return false
-					kickLocked = true
-					return true
-				},
-				sendKick: async () => {
-					kicks += 1
-				},
-			})
+		['series-a', 'series-b', 'series-c', 'series-d', 'series-e'].map(
+			(seriesId) =>
+				handleQueueOnCacheMiss(seriesId, {
+					enqueue,
+					readProgress: async () => null,
+					writeProgress: async () => {},
+					acquireKickLock: async () => {
+						if (kickLocked) return false
+						kickLocked = true
+						return true
+					},
+					sendKick: async () => {
+						kicks += 1
+					},
+				})
 		)
 	)
 

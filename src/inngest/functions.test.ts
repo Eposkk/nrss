@@ -16,7 +16,10 @@ test('processQueueKick no-ops when queue empty', async () => {
 			finalizeSeriesClaim: async () => {},
 			queueHasItems: async () => false,
 			acquireQueueKickLock: async () => false,
-			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			writeSeriesFetchProgress: async (
+				_seriesId: string,
+				_progress: SeriesFetchProgress
+			) => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -46,7 +49,10 @@ test('processQueueKick finalizes and chains when queue has more items', async ()
 			},
 			queueHasItems: async () => true,
 			acquireQueueKickLock: async () => true,
-			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			writeSeriesFetchProgress: async (
+				_seriesId: string,
+				_progress: SeriesFetchProgress
+			) => {},
 		},
 		sendEvent: async () => {
 			sent += 1
@@ -73,7 +79,10 @@ test('processQueueKick requeues current series on unexpected failure', async () 
 			},
 			queueHasItems: async () => false,
 			acquireQueueKickLock: async () => false,
-			writeSeriesFetchProgress: async (_seriesId: string, _progress: SeriesFetchProgress) => {},
+			writeSeriesFetchProgress: async (
+				_seriesId: string,
+				_progress: SeriesFetchProgress
+			) => {},
 		},
 		sendEvent: async () => {},
 		runSeriesFetchFn: async () => {

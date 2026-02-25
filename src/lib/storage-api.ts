@@ -28,6 +28,11 @@ export type KvClient = {
 	del: (key: string) => Promise<number>
 	zaddNx: (key: string, score: number, member: string) => Promise<boolean>
 	zrangeFirst: (key: string) => Promise<string | null>
+	zrangeWithScores: (
+		key: string,
+		start: number,
+		stop: number
+	) => Promise<{ member: string; score: number }[]>
 	zrank: (key: string, member: string) => Promise<number | null>
 	zrem: (key: string, member: string) => Promise<number>
 	zcard: (key: string) => Promise<number>
@@ -52,6 +57,18 @@ function getUpstash(): KvClient | null {
 		zrangeFirst: async (k) => {
 			const first = await redis.zrange<string[]>(k, 0, 0)
 			return first.at(0) ?? null
+		},
+		zrangeWithScores: async (k, start, stop) => {
+			const raw = await redis.zrange(k, start, stop, { withScores: true })
+			const arr = Array.isArray(raw) ? raw : []
+			const out: { member: string; score: number }[] = []
+			for (let i = 0; i < arr.length; i += 2) {
+				const member = arr[i] as string
+				const score = Number(arr[i + 1])
+				if (member != null && Number.isFinite(score))
+					out.push({ member, score })
+			}
+			return out
 		},
 		zrank: (k, member) => redis.zrank(k, member),
 		zrem: async (k, member) => (await redis.zrem(k, member)) as number,
@@ -78,14 +95,20 @@ async function getLocalRedis(): Promise<KvClient | null> {
 		setEx: (k, v, ttlSeconds) => localClient!.set(k, v, { EX: ttlSeconds }),
 		del: (k) => localClient!.del(k),
 		zaddNx: async (k, score, member) => {
-			const added = await localClient!.zAdd(
-				k,
-				[{ score, value: member }],
-				{ NX: true }
-			)
+			const added = await localClient!.zAdd(k, [{ score, value: member }], {
+				NX: true,
+			})
 			return Number(added) === 1
 		},
-		zrangeFirst: async (k) => (await localClient!.zRange(k, 0, 0)).at(0) ?? null,
+		zrangeFirst: async (k) =>
+			(await localClient!.zRange(k, 0, 0)).at(0) ?? null,
+		zrangeWithScores: async (k, start, stop) => {
+			const raw = await localClient!.zRangeWithScores(k, start, stop)
+			return raw.map((r: { value: string; score: number }) => ({
+				member: r.value,
+				score: r.score,
+			}))
+		},
 		zrank: (k, member) => localClient!.zRank(k, member),
 		zrem: (k, member) => localClient!.zRem(k, member),
 		zcard: (k) => localClient!.zCard(k),
@@ -332,4 +355,65 @@ export async function clearQueueAndLocks(): Promise<void> {
 	await client.del(QUEUE_ZSET_KEY)
 	await client.del(QUEUE_ACTIVE_KEY)
 	await client.del(QUEUE_KICK_LOCK_KEY)
+}
+
+export type QueueStatus = {
+	active: { seriesId: string; claimedAt: string } | null
+	activeProgress: {
+		completedBatches: number
+		totalBatches: number
+		completedEpisodes: number
+		totalEpisodes: number
+		status: string
+	} | null
+	queued: { seriesId: string; enqueuedAt: number }[]
+	kickLocked: boolean
+}
+
+export async function getQueueStatus(): Promise<QueueStatus | null> {
+	const client = await getKv()
+	if (!client) return null
+	const [activeRaw, queuedRaw, kickLockRaw] = await Promise.all([
+		client.get(QUEUE_ACTIVE_KEY),
+		client.zrangeWithScores(QUEUE_ZSET_KEY, 0, -1),
+		client.get(QUEUE_KICK_LOCK_KEY),
+	])
+	const active = parseActiveClaim(activeRaw)
+	let activeProgress: QueueStatus['activeProgress'] = null
+	if (active) {
+		const progress = await readSeriesFetchProgress(active.seriesId)
+		if (progress) {
+			activeProgress = {
+				completedBatches: progress.completedBatches,
+				totalBatches: progress.totalBatches,
+				completedEpisodes: progress.completedEpisodes,
+				totalEpisodes: progress.totalEpisodes,
+				status: progress.status,
+			}
+		}
+	}
+	const queued = queuedRaw.map((r) => ({
+		seriesId: r.member,
+		enqueuedAt: Math.round(r.score),
+	}))
+	return {
+		active: active
+			? { seriesId: active.seriesId, claimedAt: active.claimedAt }
+			: null,
+		activeProgress,
+		queued,
+		kickLocked: kickLockRaw != null,
+	}
+}
+
+export async function unblockQueue(): Promise<{
+	unblocked: boolean
+	queueLength: number
+}> {
+	const client = await getKv()
+	if (!client) return { unblocked: false, queueLength: 0 }
+	const queueLength = await client.zcard(QUEUE_ZSET_KEY)
+	await client.del(QUEUE_ACTIVE_KEY)
+	await client.del(QUEUE_KICK_LOCK_KEY)
+	return { unblocked: true, queueLength }
 }

@@ -29,7 +29,8 @@ export async function handleQueueOnCacheMiss(
 	const writeProgressFn = deps?.writeProgress ?? writeSeriesFetchProgress
 	const acquireKickLockFn = deps?.acquireKickLock ?? acquireQueueKickLock
 	const sendKickFn =
-		deps?.sendKick ?? (async () => inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} }))
+		deps?.sendKick ??
+		(async () => inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} }))
 
 	const enqueue = await enqueueFn(seriesId)
 	const existingProgress = await readProgressFn(seriesId)

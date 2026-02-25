@@ -70,6 +70,22 @@ class MemoryKv implements KvClient {
 		return this.sortedSets.get(key)?.size ?? 0
 	}
 
+	async zrangeWithScores(
+		key: string,
+		start: number,
+		stop: number
+	): Promise<{ member: string; score: number }[]> {
+		const set = this.sortedSets.get(key)
+		if (!set || set.size === 0) return []
+		const entries = [...set.entries()].sort((a, b) => {
+			if (a[1] !== b[1]) return a[1] - b[1]
+			return a[0].localeCompare(b[0])
+		})
+		const sliced =
+			stop === -1 ? entries.slice(start) : entries.slice(start, stop + 1)
+		return sliced.map(([member, score]) => ({ member, score }))
+	}
+
 	async setNxEx(key: string, value: string): Promise<boolean> {
 		if (this.strings.has(key)) return false
 		this.strings.set(key, value)
@@ -178,7 +194,9 @@ test('queue dedupes across multiple series under concurrent mixed requests', asy
 
 	const uniqueRequested = [...new Set(requests)].sort()
 	const uniqueClaimed = [...new Set(claimed)].sort()
-	const newlyEnqueued = enqueueResults.filter((r) => r.enqueued).map((r) => r.seriesId)
+	const newlyEnqueued = enqueueResults
+		.filter((r) => r.enqueued)
+		.map((r) => r.seriesId)
 
 	assert.deepEqual(uniqueClaimed, uniqueRequested)
 	assert.equal(claimed.length, uniqueRequested.length)
