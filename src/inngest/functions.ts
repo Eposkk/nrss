@@ -2,6 +2,7 @@ import { inngest } from './client'
 import {
 	fetchPlaybackUrlsBatch,
 	getSeriesCatalog,
+	type EpisodeHalResource,
 	type PlaybackResolvedEpisode,
 	parseSeries,
 } from '@/lib/nrk/nrk'
@@ -12,6 +13,7 @@ const BATCH_SIZE = Math.max(1, ENV.NRK_FETCH_BATCH_SIZE)
 const STEP_SLEEP_DURATION =
 	ENV.NRK_FETCH_BATCH_DELAY_MS > 0 ? `${ENV.NRK_FETCH_BATCH_DELAY_MS}ms` : null
 const PROGRESS_EVERY_N_BATCHES = 3
+const MAX_EPISODES_PER_QUEUE_FETCH = 300
 
 async function runSeriesFetch(
 	step: { run: Function; sleep: Function },
@@ -38,14 +40,26 @@ async function runSeriesFetch(
 		return { stored: false, reason: 'no_data' as const }
 	}
 
-	const batchCount = Math.ceil(catalog.episodeResources.length / BATCH_SIZE)
+	const episodeResources = catalog.episodeResources
+		.slice()
+		.sort((a: EpisodeHalResource, b: EpisodeHalResource) => {
+			return new Date(b.date).getTime() - new Date(a.date).getTime()
+		})
+		.slice(0, MAX_EPISODES_PER_QUEUE_FETCH)
+	if (catalog.episodeResources.length > episodeResources.length) {
+		console.log(
+			`[inngest] ${seriesId}: capped to ${episodeResources.length} newest episodes (from ${catalog.episodeResources.length})`
+		)
+	}
+
+	const batchCount = Math.ceil(episodeResources.length / BATCH_SIZE)
 	await step.run(`${prefix}-progress-running`, async () => {
 		await storage.writeSeriesFetchProgress(seriesId, {
 			status: 'running',
 			queuePosition: 0,
 			totalBatches: batchCount,
 			completedBatches: 0,
-			totalEpisodes: catalog.episodeResources.length,
+			totalEpisodes: episodeResources.length,
 			completedEpisodes: 0,
 			message: 'Henter episoder...',
 			updatedAt: new Date().toISOString(),
@@ -57,7 +71,7 @@ async function runSeriesFetch(
 		const end = start + BATCH_SIZE
 		return await step.run(`${prefix}-fetch-batch-${batchIndex}`, async () => {
 			return await fetchPlaybackUrlsBatch(
-				catalog.episodeResources.slice(start, end),
+				episodeResources.slice(start, end),
 				catalog.type,
 				{ delayPerRequest: false }
 			)
@@ -68,7 +82,7 @@ async function runSeriesFetch(
 	for (let i = 0; i < batchCount; i++) {
 		const start = i * BATCH_SIZE
 		const end = start + BATCH_SIZE
-		const batchItems = catalog.episodeResources.slice(start, end)
+		const batchItems = episodeResources.slice(start, end)
 		console.log(
 			`[inngest] ${seriesId}: batch ${i + 1}/${batchCount} start (${batchItems.length} episodes)`
 		)
@@ -89,10 +103,10 @@ async function runSeriesFetch(
 					queuePosition: 0,
 					totalBatches: batchCount,
 					completedBatches,
-					totalEpisodes: catalog.episodeResources.length,
+					totalEpisodes: episodeResources.length,
 					completedEpisodes: Math.min(
 						completedBatches * BATCH_SIZE,
-						catalog.episodeResources.length
+						episodeResources.length
 					),
 					message: 'Henter episoder...',
 					updatedAt: new Date().toISOString(),
@@ -118,8 +132,8 @@ async function runSeriesFetch(
 				queuePosition: undefined,
 				totalBatches: batchCount,
 				completedBatches: batchCount,
-				totalEpisodes: catalog.episodeResources.length,
-				completedEpisodes: catalog.episodeResources.length,
+				totalEpisodes: episodeResources.length,
+				completedEpisodes: episodeResources.length,
 				message: 'Fant ingen avspillbare episoder for serien.',
 				updatedAt: new Date().toISOString(),
 			})
@@ -164,7 +178,8 @@ export async function processQueueKick(
 ) {
 	const storageApi: QueueWorkerStorageDeps = deps?.storageApi ?? storage
 	const sendEvent =
-		deps?.sendEvent ?? (async () => inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} }))
+		deps?.sendEvent ??
+		(async () => inngest.send({ name: EVENTS.SERIES_QUEUE_KICK, data: {} }))
 	const runSeriesFetchFn: (
 		stepApi: StepApi,
 		seriesId: string,
@@ -193,7 +208,11 @@ export async function processQueueKick(
 				updatedAt: new Date().toISOString(),
 			})
 		})
-		console.error('[inngest] Unexpected series fetch error:', claim.seriesId, err)
+		console.error(
+			'[inngest] Unexpected series fetch error:',
+			claim.seriesId,
+			err
+		)
 		shouldRequeue = true
 		result = { stored: false, reason: 'no_data' }
 	} finally {
