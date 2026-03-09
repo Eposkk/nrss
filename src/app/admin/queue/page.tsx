@@ -1,9 +1,9 @@
 'use client'
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Suspense } from 'react'
+import { Button } from '@/components/ui/button'
 
 type QueueStatus = {
 	active: { seriesId: string; claimedAt: string } | null
@@ -70,32 +70,20 @@ function AdminQueueContent() {
 
 	return (
 		<div className='min-h-screen'>
-			<header className='border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 backdrop-blur sticky top-0 z-10'>
-				<div className='mx-auto max-w-3xl px-4 py-6'>
-					<Link href='/' className='inline-block'>
-						<h1 className='text-2xl font-bold tracking-tight hover:opacity-80 transition-opacity'>
-							NRSS Admin
-						</h1>
-						<p className='text-slate-600 dark:text-slate-400 text-sm mt-0.5'>
-							Queue status (refresh every 10s)
-						</p>
-					</Link>
-				</div>
-			</header>
-			<main className='mx-auto max-w-3xl px-4 py-8'>
+			<main className='mx-auto max-w-3xl px-4 py-8 text-foreground'>
 				{(error || unblockMutation.error) && (
-					<p className='text-red-600 dark:text-red-400 mb-4'>
+					<p className='text-destructive mb-4'>
 						{error?.message ?? unblockMutation.error?.message}
 					</p>
 				)}
 				{status ? (
 					<div className='space-y-6'>
 						<section>
-							<h2 className='text-lg font-semibold text-slate-800 dark:text-slate-200'>
+							<h2 className='text-lg font-semibold text-foreground'>
 								Active
 							</h2>
 							{status.active ? (
-								<div className='mt-1 space-y-1 text-slate-600 dark:text-slate-400'>
+								<div className='mt-1 space-y-1 text-muted-foreground'>
 									<p>
 										{status.active.seriesId} (claimed at{' '}
 										{new Date(status.active.claimedAt).toISOString()})
@@ -112,15 +100,15 @@ function AdminQueueContent() {
 										)}
 								</div>
 							) : (
-								<p className='mt-1 text-slate-500'>None</p>
+								<p className='mt-1 text-muted-foreground'>None</p>
 							)}
 						</section>
 						<section>
-							<h2 className='text-lg font-semibold text-slate-800 dark:text-slate-200'>
+							<h2 className='text-lg font-semibold text-foreground'>
 								Queued ({status.queued.length} items)
 							</h2>
 							{status.queued.length > 0 ? (
-								<ul className='mt-2 list-decimal list-inside space-y-1 text-slate-600 dark:text-slate-400'>
+								<ul className='mt-2 list-decimal list-inside space-y-1 text-muted-foreground'>
 									{status.queued.map((q, i) => (
 										<li key={`${q.seriesId}-${i}`}>
 											{q.seriesId} (enqueued{' '}
@@ -129,34 +117,33 @@ function AdminQueueContent() {
 									))}
 								</ul>
 							) : (
-								<p className='mt-1 text-slate-500'>Empty</p>
+								<p className='mt-1 text-muted-foreground'>Empty</p>
 							)}
 						</section>
 						<section>
-							<h2 className='text-lg font-semibold text-slate-800 dark:text-slate-200'>
+							<h2 className='text-lg font-semibold text-foreground'>
 								Kick lock
 							</h2>
-							<p className='mt-1 text-slate-600 dark:text-slate-400'>
+							<p className='mt-1 text-muted-foreground'>
 								{status.kickLocked ? (
-									<span className='text-amber-600 dark:text-amber-400'>
-										Held
-									</span>
+									<span className='text-foreground font-medium'>Held</span>
 								) : (
-									<span className='text-slate-500'>Not held</span>
+									<span>Not held</span>
 								)}
 							</p>
 						</section>
-						<button
+						<Button
 							type='button'
+							variant='secondary'
+							size='form-sm'
 							onClick={handleUnblock}
 							disabled={!canUnblock || unblockMutation.isPending}
-							className='rounded-lg bg-slate-200 dark:bg-slate-700 px-4 py-2 text-slate-800 dark:text-slate-200 font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors'
 						>
 							{unblockMutation.isPending ? 'Unblocking…' : 'Unblock queue'}
-						</button>
+						</Button>
 					</div>
 				) : isPending ? (
-					<p className='text-slate-500'>Loading…</p>
+					<p className='text-muted-foreground'>Loading…</p>
 				) : null}
 			</main>
 		</div>

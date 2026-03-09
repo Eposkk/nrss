@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useState } from 'react'
 import SeriesCard from './SeriesCard'
+import { Button } from './ui/button'
 import type { SearchSeriesResult } from '@/lib/nrk/types'
 
 const DEBOUNCE_MS = 400
@@ -17,7 +18,7 @@ function Spinner() {
 	return (
 		<div className='mt-8 flex justify-center' role='status' aria-label='Søker'>
 			<svg
-				className='animate-spin h-8 w-8 text-slate-400'
+				className='animate-spin h-8 w-8 text-muted-foreground'
 				xmlns='http://www.w3.org/2000/svg'
 				fill='none'
 				viewBox='0 0 24 24'
@@ -105,14 +106,11 @@ export default function SearchWithResults({
 					id='query'
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
-					className='flex-1 px-4 py-3 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-transparent transition-shadow'
+					className='flex-1 px-4 py-3 rounded-lg border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent transition-shadow'
 				/>
-				<button
-					type='submit'
-					className='px-6 py-3 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 font-medium hover:bg-slate-800 dark:hover:bg-slate-200 transition-colors shrink-0'
-				>
+				<Button type='submit' variant='soft' size='form'>
 					Søk
-				</button>
+				</Button>
 			</form>
 
 			{showSpinner && <Spinner />}
@@ -120,12 +118,12 @@ export default function SearchWithResults({
 			{query && !showSpinner && results !== undefined && (
 				<div className='mt-8'>
 					{results.length === 0 ? (
-						<p className='text-slate-600 dark:text-slate-400 text-center py-12'>
+						<p className='text-muted-foreground text-center py-12'>
 							Ingen resultater for dette søket.
 						</p>
 					) : (
 						<>
-							<p className='text-sm text-slate-500 dark:text-slate-400 mb-4'>
+							<p className='text-sm text-muted-foreground mb-4'>
 								{results.length} treff
 							</p>
 							<div className='space-y-4'>

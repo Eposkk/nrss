@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
+import { Button } from './ui/button'
 
 export default function CopyButton({
 	copyText,
@@ -20,12 +21,14 @@ export default function CopyButton({
 	}, [copyText])
 
 	return (
-		<button
+		<Button
 			type='button'
+			variant='secondary'
+			size='lg'
 			onClick={handleClick}
-			className={`${className ?? ''}`}
+			className={className}
 		>
 			{copied ? 'Kopiert ✓' : children}
-		</button>
+		</Button>
 	)
 }
