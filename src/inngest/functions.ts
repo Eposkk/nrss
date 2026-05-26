@@ -241,8 +241,8 @@ export const fetchSeriesQueueWorker = inngest.createFunction(
 		id: 'fetch-series-queue-worker',
 		concurrency: { limit: 1 },
 		retries: 2,
+		triggers: [{ event: EVENTS.SERIES_QUEUE_KICK }],
 	},
-	{ event: EVENTS.SERIES_QUEUE_KICK },
 	async ({ step }) => {
 		return await processQueueKick(step)
 	}
